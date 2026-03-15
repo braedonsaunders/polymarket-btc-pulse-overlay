@@ -1,16 +1,16 @@
 # BTC Pulse Overlay
 
-Fast BTC context. Zero trade calls.
+Fast market context. Zero trade calls.
 
-BTC Pulse Overlay is a read-only browser extension that adds a live Binance BTC/USDT reference panel directly into compatible Polymarket price pages. It surfaces price, latency, short-term flow, and liquidity in the place people already look, without placing orders, clicking buttons, or telling anyone what to trade.
+BTC Pulse Overlay is a read-only browser extension that adds a live Binance spot reference panel directly into compatible Polymarket price pages. It surfaces price, latency, short-term flow, and liquidity in the place people already look, without placing orders, clicking buttons, or telling anyone what to trade.
 
-If your first question on a BTC market page is "what is spot doing right now?", this extension answers it immediately.
+If your first question on a compatible market page is "what is spot doing right now?", this extension answers it immediately.
 
 ![BTC Pulse Overlay screenshot](screenshot.png)
 
 ## What it shows
 
-- Live Binance BTC/USDT reference price
+- Live Binance spot reference price for supported assets
 - WebSocket latency to the latest trade print
 - Short-term aggressor flow bias
 - Lightweight liquidity context from depth, spread, and recent flow
@@ -25,7 +25,18 @@ If your first question on a BTC market page is "what is spot doing right now?", 
 
 ## Compatible pages
 
-The current version is tuned for BTC price markets where a visible `Price to beat` row exists on the page.
+The current version is tuned for Polymarket price markets where a visible `Price to beat` row exists on the page.
+
+Currently verified assets:
+
+- BTC
+- ETH
+- SOL
+- XRP
+- DOGE
+- BNB
+
+Unsupported 5-minute assets show an unavailable label instead of falling back to BTC.
 
 ## Install
 
@@ -34,7 +45,7 @@ The current version is tuned for BTC price markets where a visible `Price to bea
 3. Enable `Developer mode`.
 4. Click `Load unpacked`.
 5. Select this folder.
-6. Open a compatible Polymarket BTC price page.
+6. Open a compatible Polymarket price page.
 
 ## Local development
 

@@ -3,8 +3,6 @@
   "use strict";
 
   const EXTENSION_NAME = "BTC Pulse Overlay";
-  const WS_URL =
-    "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@aggTrade/btcusdt@bookTicker";
   const RECONNECT_BASE_MS = 500;
   const RECONNECT_MAX_MS = 10000;
   const STALE_AFTER_MS = 3000;
@@ -13,9 +11,57 @@
   const FLOW_RETENTION_MS = 12000;
   const PRIMARY_FLOW_WINDOW_MS = 3000;
   const MAX_FLOW_SATURATION_USD = 3000000;
+  const ASSET_CONFIGS = [
+    {
+      key: "btc",
+      pairLabel: "Binance BTC/USDT",
+      streamSymbol: "btcusdt",
+      isSupported: true,
+      patterns: [/\bbitcoin\b/i, /(?:^|[^a-z])btc(?:[^a-z]|$)/i],
+    },
+    {
+      key: "eth",
+      pairLabel: "Binance ETH/USDT",
+      streamSymbol: "ethusdt",
+      isSupported: true,
+      patterns: [/\bethereum\b/i, /\betherium\b/i, /(?:^|[^a-z])eth(?:[^a-z]|$)/i],
+    },
+    {
+      key: "sol",
+      pairLabel: "Binance SOL/USDT",
+      streamSymbol: "solusdt",
+      isSupported: true,
+      patterns: [/\bsolana\b/i, /(?:^|[^a-z])sol(?:[^a-z]|$)/i],
+    },
+    {
+      key: "xrp",
+      pairLabel: "Binance XRP/USDT",
+      streamSymbol: "xrpusdt",
+      isSupported: true,
+      patterns: [/\bripple\b/i, /(?:^|[^a-z])xrp(?:[^a-z]|$)/i],
+    },
+    {
+      key: "doge",
+      pairLabel: "Binance DOGE/USDT",
+      streamSymbol: "dogeusdt",
+      isSupported: true,
+      patterns: [/\bdogecoin\b/i, /(?:^|[^a-z])doge(?:[^a-z]|$)/i],
+    },
+    {
+      key: "bnb",
+      pairLabel: "Binance BNB/USDT",
+      streamSymbol: "bnbusdt",
+      isSupported: true,
+      patterns: [/\bbinance coin\b/i, /(?:^|[^a-z])bnb(?:[^a-z]|$)/i],
+    },
+  ];
+  const DEFAULT_ASSET = ASSET_CONFIGS[0];
 
   let ws = null;
+  let reconnectTimer = null;
   let reconnectDelay = RECONNECT_BASE_MS;
+  let activeAsset = DEFAULT_ASSET;
+  let flashTimeout = null;
   let lastPrice = null;
   let prevPrice = null;
   let lastMessageTs = 0;
@@ -48,6 +94,7 @@
   let injectedCol = null;
   let injectedDivider = null;
   let elPrice = null;
+  let elPairLabel = null;
   let elLatency = null;
   let elDot = null;
   let elFlowChip = null;
@@ -274,6 +321,100 @@
     return String(value || "").replace(/\s+/g, " ").trim();
   }
 
+  function getPageSlug() {
+    return location.pathname.split("/").filter(Boolean).pop() || "";
+  }
+
+  function getPageHeadingText() {
+    return normalizeText(document.querySelector("h1")?.textContent || "");
+  }
+
+  function findSupportedAssetInText(text) {
+    const source = String(text || "");
+    if (!source) return null;
+
+    let bestMatch = null;
+
+    for (const asset of ASSET_CONFIGS) {
+      for (const pattern of asset.patterns) {
+        const match = source.match(pattern);
+        if (!match) continue;
+
+        const index = typeof match.index === "number" ? match.index : 0;
+        if (!bestMatch || index < bestMatch.index) {
+          bestMatch = { asset, index };
+        }
+      }
+    }
+
+    return bestMatch?.asset || null;
+  }
+
+  function toAssetKey(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function formatAssetLabel(value) {
+    return String(value || "")
+      .replace(/[-_]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  function getFiveMinuteMarketAssetName() {
+    const headingText = getPageHeadingText();
+    const headingMatch = headingText.match(/^(.+?)\s+Up or Down\s*-\s*5\s*min\b/i);
+    if (headingMatch?.[1]) return formatAssetLabel(headingMatch[1]);
+
+    const slug = getPageSlug();
+    const slugMatch = slug.match(/^(.+?)-up-or-down-5-min(?:-|$)/i);
+    if (slugMatch?.[1]) return formatAssetLabel(slugMatch[1]);
+
+    return "";
+  }
+
+  function createUnsupportedAsset(assetName) {
+    const label = formatAssetLabel(assetName) || "Asset";
+    const key = toAssetKey(label) || "asset";
+
+    return {
+      key: "unsupported:" + key,
+      pairLabel: "Binance " + label + " unavailable",
+      streamSymbol: "",
+      isSupported: false,
+      patterns: [],
+    };
+  }
+
+  function detectTrackedAsset() {
+    const supportedAsset =
+      findSupportedAssetInText(getPageSlug()) || findSupportedAssetInText(getPageHeadingText());
+    if (supportedAsset) return supportedAsset;
+
+    const marketAssetName = getFiveMinuteMarketAssetName();
+    if (marketAssetName) {
+      return createUnsupportedAsset(marketAssetName);
+    }
+
+    return DEFAULT_ASSET;
+  }
+
+  function buildWsUrl(streamSymbol) {
+    return (
+      "wss://stream.binance.com:9443/stream?streams=" +
+      streamSymbol +
+      "@trade/" +
+      streamSymbol +
+      "@aggTrade/" +
+      streamSymbol +
+      "@bookTicker"
+    );
+  }
+
   function isElementVisible(element) {
     if (!element || !document.body.contains(element)) return false;
 
@@ -315,6 +456,7 @@
     injectedCol = null;
     injectedDivider = null;
     elPrice = null;
+    elPairLabel = null;
     elLatency = null;
     elDot = null;
     elFlowChip = null;
@@ -330,6 +472,11 @@
       if (activeRow && activeRow.contains(node)) continue;
       node.remove();
     }
+  }
+
+  function renderPairLabel() {
+    if (!elPairLabel) return;
+    elPairLabel.textContent = activeAsset.pairLabel;
   }
 
   function renderFlow() {
@@ -396,6 +543,89 @@
     }
   }
 
+  function resetLiveStreamState() {
+    clearTimeout(flashTimeout);
+    flashTimeout = null;
+
+    lastPrice = null;
+    prevPrice = null;
+    lastMessageTs = 0;
+    latencyMs = 0;
+    lastPanelRenderTs = 0;
+
+    bestBidPrice = null;
+    bestBidQty = null;
+    bestAskPrice = null;
+    bestAskQty = null;
+    lastMidPrice = null;
+    spreadBps = 0;
+    bookImbalance = 0;
+
+    aggFlow.length = 0;
+
+    latestFlow = {
+      score: 0,
+      tone: "neutral",
+      label: "Warming",
+      meta: "Waiting for live flow",
+    };
+    latestLiquidity = {
+      score: 0,
+      tone: "mid",
+      label: "Loading",
+      meta: "Waiting for book",
+    };
+
+    if (elPrice) {
+      elPrice.textContent = "--";
+      elPrice.classList.remove("bpo-tick-up", "bpo-tick-down");
+    }
+    if (elLatency) {
+      elLatency.textContent = "--";
+      elLatency.className = "bpo-latency";
+    }
+    if (elDot) elDot.className = "bpo-dot disconnected";
+
+    renderFlow();
+    renderLiquidity();
+  }
+
+  function disconnectSocket() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+
+    if (!ws) return;
+
+    const socket = ws;
+    ws = null;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+
+    try {
+      socket.close();
+    } catch (error) {
+      console.warn("[" + EXTENSION_NAME + "] WS close error", error);
+    }
+  }
+
+  function syncTrackedAsset(forceReconnect = false) {
+    const nextAsset = detectTrackedAsset();
+    if (!forceReconnect && activeAsset.key === nextAsset.key) {
+      renderPairLabel();
+      return false;
+    }
+
+    activeAsset = nextAsset;
+    reconnectDelay = RECONNECT_BASE_MS;
+    resetLiveStreamState();
+    renderPairLabel();
+    disconnectSocket();
+    connect();
+    return true;
+  }
+
   function injectColumn(context) {
     context = context || findPriceContext();
     const row = context?.row || null;
@@ -425,6 +655,7 @@
       }
 
       elPrice = existingPrice;
+      elPairLabel = row.querySelector("[data-bpo-pair-label]");
       elLatency = row.querySelector("[data-bpo-latency]");
       elDot = row.querySelector("[data-bpo-dot]");
       elFlowChip = row.querySelector("[data-bpo-flow-chip]");
@@ -438,6 +669,7 @@
         updateLatency();
       }
 
+      renderPairLabel();
       renderFlow();
       renderLiquidity();
 
@@ -465,7 +697,7 @@
       <div class="bpo-label-row">
         <div class="bpo-label-main">
           <div class="bpo-dot" data-bpo-dot></div>
-          <span class="text-body-xs font-semibold" style="color: var(--bpo-accent);">Binance live</span>
+          <span class="text-body-xs font-semibold" data-bpo-pair-label style="color: var(--bpo-accent);">Binance live</span>
           <span class="bpo-latency" data-bpo-latency>--</span>
         </div>
       </div>
@@ -496,6 +728,7 @@
     ensureRightmostPlacement(row);
 
     elPrice = injectedCol.querySelector("[data-bpo-price]");
+    elPairLabel = injectedCol.querySelector("[data-bpo-pair-label]");
     elLatency = injectedCol.querySelector("[data-bpo-latency]");
     elDot = injectedCol.querySelector("[data-bpo-dot]");
     elFlowChip = injectedCol.querySelector("[data-bpo-flow-chip]");
@@ -509,6 +742,7 @@
       updateLatency();
     }
 
+    renderPairLabel();
     renderFlow();
     renderLiquidity();
 
@@ -523,6 +757,8 @@
   }
 
   function pollForInjection() {
+    syncTrackedAsset();
+
     const context = findPriceContext();
     const row = context?.row || null;
     if (row) cleanupInjectedNodes(row);
@@ -554,7 +790,6 @@
   setTimeout(pollForInjection, 1500);
   setTimeout(pollForInjection, 3000);
 
-  let flashTimeout = null;
   function flashTick(direction) {
     if (!elPrice) return;
     elPrice.classList.remove("bpo-tick-up", "bpo-tick-down");
@@ -868,6 +1103,10 @@
   }, 1000);
 
   function connect() {
+    if (!activeAsset?.isSupported || !activeAsset.streamSymbol) {
+      return;
+    }
+
     if (
       ws &&
       (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
@@ -875,15 +1114,20 @@
       return;
     }
 
-    ws = new WebSocket(WS_URL);
+    const socket = new WebSocket(buildWsUrl(activeAsset.streamSymbol));
+    const socketAssetKey = activeAsset.key;
 
-    ws.onopen = () => {
-      console.log("[" + EXTENSION_NAME + "] Binance WS connected");
+    ws = socket;
+
+    socket.onopen = () => {
+      if (ws !== socket) return;
+      console.log("[" + EXTENSION_NAME + "] Binance WS connected (" + activeAsset.pairLabel + ")");
       reconnectDelay = RECONNECT_BASE_MS;
       if (elDot) elDot.className = "bpo-dot";
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (ws !== socket || activeAsset.key !== socketAssetKey) return;
       try {
         const payload = JSON.parse(event.data);
         const stream = payload?.stream || "";
@@ -907,24 +1151,32 @@
       }
     };
 
-    ws.onerror = () => {
-      console.warn("[" + EXTENSION_NAME + "] WS error");
+    socket.onerror = () => {
+      if (ws !== socket) return;
+      console.warn("[" + EXTENSION_NAME + "] WS error (" + activeAsset.pairLabel + ")");
     };
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+      if (ws !== socket) return;
+      ws = null;
       console.log(
         "[" + EXTENSION_NAME + "] WS closed, reconnecting in " + reconnectDelay + "ms"
       );
       if (elDot) elDot.className = "bpo-dot disconnected";
-      setTimeout(connect, reconnectDelay);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
     };
   }
 
+  syncTrackedAsset();
   connect();
   updatePanel(true);
 
   window.addEventListener("beforeunload", () => {
-    if (ws) ws.close();
+    disconnectSocket();
   });
 })();
